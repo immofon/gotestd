@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -55,6 +58,64 @@ func (cw *ColorWriter) Write(p []byte) (n int, err error) {
 	return N, nil
 }
 
+type GoTestOutputWriter struct {
+	io.Writer
+	color string
+	buf   *bytes.Buffer
+	r     *bufio.Reader
+}
+
+func (gw *GoTestOutputWriter) Write(p []byte) (n int, err error) {
+	w := gw.Writer
+	if gw.buf == nil {
+		fmt.Println(strings.Repeat("-", 80))
+		gw.buf = bytes.NewBuffer(nil)
+		gw.r = bufio.NewReader(gw.buf)
+	}
+	if gw.color == "" {
+		gw.color = "0"
+	}
+
+	colormap := map[string]string{
+		"white":  "0",
+		"red":    "31",
+		"green":  "32",
+		"yellow": "33",
+		"blue":   "36",
+	}
+	prefixmap := map[string]string{
+		"?":        "green",
+		"ok":       "green",
+		"=== RUN":  "white",
+		"--- PASS": "green",
+		"PASS":     "green",
+		"--- FAIL": "red",
+		"FAIL":     "red",
+	}
+
+	defer func() {
+		for {
+			line, _ := gw.r.ReadSlice('\n')
+
+			if len(line) == 0 {
+				return
+			}
+			for prefix, color := range prefixmap {
+				if bytes.HasPrefix(line, []byte(prefix)) {
+					gw.color = colormap[color]
+				}
+			}
+
+			w.Write([]byte("\u001b[" + gw.color + "m"))
+			w.Write(line)
+		}
+
+	}()
+
+	n, err = gw.buf.Write(p)
+	return n, err
+}
+
 func main() {
 	watcher, err := rfsnotify.NewWatcher()
 	if err != nil {
@@ -101,7 +162,7 @@ func main() {
 
 			ctx, cancel = context.WithCancel(context.Background())
 			cmd := exec.CommandContext(ctx, "go", "test", "-v", "./...")
-			cmd.Stdout = &ColorWriter{os.Stdout, "green"}
+			cmd.Stdout = &GoTestOutputWriter{Writer: os.Stdout}
 			cmd.Stderr = &ColorWriter{os.Stderr, "red"}
 			go cmd.Run()
 		}
